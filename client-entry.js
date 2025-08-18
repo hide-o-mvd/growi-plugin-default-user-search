@@ -1,31 +1,12 @@
-// client-entry.tsx
+import config from './package.json';
+import { bootstrapObserver } from './src/bootstrap';
+// SPA 遷移にも対応：常にブートするだけでOK（内部で1回だけ適用）
 const activate = () => {
-    // DOM変化を監視
-    const observer = new MutationObserver(() => {
-        // 検索結果ページ (/ _search) でのみ実行
-        if (!location.pathname.startsWith('/_search')) {
-            return;
-        }
-        // フィルタ部要素を取得（要カスタマイズ）
-        const filterArea = document.querySelector('.grw-search-control');
-        if (!filterArea || filterArea.getAttribute('data-defaulted')) {
-            return;
-        }
-        filterArea.setAttribute('data-defaulted', 'true');
-        // 「/user下も含む」チェックボックスを探してONに
-        const chk = filterArea.querySelector('input[name="includeUserHomepages"]');
-        if (chk && !chk.checked) {
-            chk.click();
-        }
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
+    bootstrapObserver();
 };
 const deactivate = () => {
-    // 必要に応じてクリーンアップ処理
+    // 今回は特に後処理なし
 };
-if (window.pluginActivators == null) {
-    window.pluginActivators = {};
-}
-window.pluginActivators['growi-plugin-default-user-search'] = { activate, deactivate };
-export {};
-//# sourceMappingURL=client-entry.js.map
+// register to GROWI
+window.pluginActivators = window.pluginActivators ?? {};
+window.pluginActivators[config.name] = { activate, deactivate };
