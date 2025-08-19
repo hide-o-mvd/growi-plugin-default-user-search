@@ -1,82 +1,128 @@
-// src/bootstrap.ts
-const SESSION_FLAG = 'growi.includeUser.initialized';
+// ./src/bootstrap.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
-function findIncludeUserCheckbox(): { checkbox: HTMLInputElement, label?: HTMLLabelElement } | null {
-  // 1) ラベルのテキストから候補を拾う
-  const labels = Array.from(document.querySelectorAll('label')) as HTMLLabelElement[];
-  const label = labels.find(lab => {
-    const t = lab.textContent?.trim() ?? '';
-    return t.includes('/user') || t.includes('下も含む') || t.toLowerCase().includes('include');
-  });
+// 1. ルート判定
+function isSearchPage(): boolean {
+  const p = location.pathname;
+  return p.includes('/_search') || p.includes('/search');
+}
 
-  let checkbox: HTMLInputElement | null = null;
+// 2. 「/user 下も含む」チェックを “ユーザー操作として” 実行（= onChange を確実に発火）
+function clickIncludeUserIfFound(root: ParentNode): boolean {
+  // ラベル文言は日英混在に備え、「/user」を手掛かりに広めに探索
+  const nodes = Array.from(
+    root.querySelectorAll<HTMLElement>('label, span, div, button')
+  );
 
-  if (label) {
-    const inLabel = label.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
-    if (inLabel) checkbox = inLabel;
-    if (!checkbox) {
-      const forId = label.getAttribute('for');
-      if (forId) {
-        const byFor = document.getElementById(forId) as HTMLInputElement | null;
-        if (byFor && byFor.type === 'checkbox') checkbox = byFor;
+  for (const el of nodes) {
+    const text = (el.textContent || '').trim();
+    if (!text.includes('/user')) continue;
+
+    // 直下の input[type=checkbox]
+    const direct = el.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    if (direct) {
+      if (!direct.checked) direct.click();
+      return true;
+    }
+
+    // 兄弟にチェックボックスがあるケース
+    const prev = el.previousElementSibling as HTMLInputElement | null;
+    if (prev?.matches?.('input[type="checkbox"]')) {
+      if (!prev.checked) prev.click();
+      return true;
+    }
+    const next = el.nextElementSibling as HTMLInputElement | null;
+    if (next?.matches?.('input[type="checkbox"]')) {
+      if (!next.checked) next.click();
+      return true;
+    }
+
+    // label[for] → id で input を辿る
+    const forId = (el as HTMLLabelElement).htmlFor;
+    if (forId) {
+      const byId = root.querySelector<HTMLInputElement>(`#${CSS.escape(forId)}`);
+      if (byId?.type === 'checkbox') {
+        if (!byId.checked) byId.click();
+        return true;
       }
     }
-    if (checkbox) return { checkbox, label };
   }
-
-  // 2) 属性フォールバック
-  checkbox = document.querySelector(
-    'input[type="checkbox"][name*="user" i], input[type="checkbox"][id*="user" i], input[type="checkbox"][data-testid*="user" i]'
-  ) as HTMLInputElement | null;
-
-  return checkbox ? { checkbox } : null;
+  return false;
 }
 
-/** “ユーザー操作に近い”手順でONにする */
-function turnOnBySimulatedUserAction(checkbox: HTMLInputElement, label?: HTMLLabelElement): void {
-  if (checkbox.checked) return;          // 既にONなら何もしない
+// 3. フォールバック：URL クエリから `-prefix:/user/` を削除して即時反映
+function removeUserExcludeFromQuery(): boolean {
+  const url = new URL(location.href);
+  const key = url.searchParams.has('q') ? 'q'
+           : url.searchParams.has('query') ? 'query'
+           : null;
+  if (!key) return false;
 
-  // 1) ラベルのクリックを優先（UIがlabelで制御されている可能性）
-  (label ?? checkbox).click();           // element.click(): クリックイベントを発火（isTrusted=false） [2](https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/click)
+  const q = url.searchParams.get(key) || '';
+  if (!q) return false;
 
-  // 2) それでも未反映のときのフォールバック（ReactのonChange対応）
-  if (!checkbox.checked) {
-    checkbox.checked = true;
-    checkbox.dispatchEvent(new Event('input',  { bubbles: true }));  // Reactはinput/changeを監視するケースあり [1](https://legacy.reactjs.org/docs/events.html)
-    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+  const replaced = q.replace(/\s*-prefix:\/user\/?/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  if (replaced !== q) {
+    url.searchParams.set(key, replaced);
+    history.replaceState({}, '', url.toString());
+    // ルーティングに再評価させる
+    window.dispatchEvent(new Event('popstate'));
+    return true;
   }
-
-  // 3) さらに保険：親フォームがあれば“ボタンを押した扱い”で送信
-  const form = checkbox.closest('form') as HTMLFormElement | null;
-  if (form && typeof (form as any).requestSubmit === 'function') {
-    // 状態反映とdiff→再検索の内部処理にワンクッション
-    setTimeout(() => form.requestSubmit(), 0);  // HTMLFormElement.requestSubmit() [3](https://developer.mozilla.org/en-US/docs/Web/API/HTMLFormElement/requestSubmit)
-  }
+  return false;
 }
 
-function applyOnce(): boolean {
-  if (sessionStorage.getItem(SESSION_FLAG) === '1') return true;
+// 4. 1 回だけ適用するためのフラグ
+const APPLIED_FLAG = 'gp_incuser__applied';
 
-  const found = findIncludeUserCheckbox();
-  if (!found) return false;
+function applyOnce(): void {
+  if (!isSearchPage()) return;
 
-  // Reactのハンドラ取付完了を待つ（2フレーム遅延）
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      turnOnBySimulatedUserAction(found.checkbox, found.label ?? undefined);
-      sessionStorage.setItem(SESSION_FLAG, '1');
-    });
+  // 同一ページ内での多重適用防止
+  if ((document.body as any)[APPLIED_FLAG]) return;
+  (document.body as any)[APPLIED_FLAG] = true;
+
+  // 即時試行（描画済みならここで終わる）
+  if (clickIncludeUserIfFound(document)) return;
+
+  // 遅延描画に備えて監視
+  const mo = new MutationObserver((_muts, obs) => {
+    if (clickIncludeUserIfFound(document)) {
+      obs.disconnect();
+    }
   });
+  mo.observe(document.body, { childList: true, subtree: true });
 
-  return true;
+  // UI が見つからないケースでも効かせる “最後の砦”
+  removeUserExcludeFromQuery();
+}
+
+// 5. SPA ルーティングに追随（popstate / pushState）
+function patchPushStateOnce(): void {
+  const hist = window.history as any;
+  if (hist.__gp_patched) return;
+  const origPush = hist.pushState;
+  hist.pushState = function (...args: any[]) {
+    const ret = origPush.apply(this, args);
+    window.dispatchEvent(new Event('pushstate'));
+    return ret;
+  };
+  hist.__gp_patched = true;
 }
 
 export function bootstrapObserver(): void {
-  if (applyOnce()) return;
+  patchPushStateOnce();
 
-  const obs = new MutationObserver(() => {
-    if (applyOnce()) obs.disconnect();
-  });
+  const onRoute = () => {
+    // ページ遷移の度に再適用できるようフラグをクリア
+    (document.body as any)[APPLIED_FLAG] = false;
+    applyOnce();
+  };
 
-  obs.observe(document.documentElement, { childList: true, subtree: true });
+  // 初回
+  applyOnce();
+
+  // ルーティングイベント
+  window.addEventListener('popstate', onRoute);
+  window.addEventListener('pushstate', onRoute);
 }
